@@ -2,34 +2,225 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Scroll Reverb Demo</title>
+  <link rel="icon" type="image/x-icon" href="fish-groove.gif">
+  <title>AudioExperiment</title>
   <style>
     body {
       margin: 0;
       font-family: sans-serif;
       height: 300vh;
-      background: linear-gradient(#222, #555);
+      background: linear-gradient(#555, #111);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
       color: white;
-      padding: 40px;
+      overflow: hidden;
     }
 
-    #start {
+    #audio-container {
       position: fixed;
-      top: 20px;
-      left: 20px;
-      padding: 14px 20px;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2em;
+    }
+
+    #audio-container img {
+      width: 50px;
+    }
+
+    #playerDiv {
+        display: none;
+    }
+
+    audio {
+      width: 300px;
+      outline: none;
+      display: none;
+    }
+
+    #uploaderBtn, #loadDefaultBtn {
+      padding: 15px 20px;
       background: #fff;
       color: #000;
-      border-radius: 6px;
+      border: none;
+      border-radius: 50px;
       cursor: pointer;
       font-weight: bold;
     }
+
+    #uploader {
+      margin-bottom: 10px;
+    }
   </style>
 </head>
-<body>
+<body onload="scrollToTop()">
+  <div id="audio-container">
+    <div>
+      <div id="uploaderDiv">
+        <input type="file" id="uploaderBtn" accept="audio/*"/>
+        <p>or</p>
+        <button id="loadDefaultBtn">Load Default Song</button>
+      </div>
+      <div id="playerDiv">
+        <div>
+          <img src="fish-groove.gif" alt="Groovy fish"/>
+        </div>
+        <p id="fileName" style="margin-bottom: 10px; font-weight: bold;"></p>
+        <audio id="audioPlayer" controls></audio>
+        <p id="playerInfo">Scroll to increase/decrease effect</p>
+      </div>
+    </div>
+  </div>
 
-  <div id="start">Click to start audio</div>
+  <script>
+    // ======= Elements =======
+    const uploaderDiv = document.getElementById('uploaderDiv');
+    const uploader = document.getElementById('uploaderBtn');
+    const loadDefaultBtn = document.getElementById('loadDefaultBtn');
+    const playerDiv = document.getElementById('playerDiv');
+    const fileNameDisplay = document.getElementById('fileName');
+    const audioPlayer = document.getElementById('audioPlayer');
+    const playerInfo = document.getElementById('playerInfo');
 
-  <script src="audio.js"></script>
+    // ======= User Interactions =======
+    function loadAudio(fileOrUrl, displayName) {
+      audioPlayer.src = fileOrUrl;
+      audioPlayer.style.display = "block";
+      initAudio(audioPlayer).then(() => {
+        fileNameDisplay.textContent = displayName
+        uploaderDiv.style.display = "none";
+        playerDiv.style.display = "block";
+        document.body.style.overflow = "auto";
+        scrollToTop();
+      });
+    }
+
+    uploader.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const url = URL.createObjectURL(file);
+      loadAudio(url, file.name);
+    });
+
+
+    loadDefaultBtn.addEventListener("click", () => {
+      loadAudio("capaodacanoa.mp3", "Default Song");
+    });
+
+    function scrollToTop() {
+      window.scrollTo(0, 0);
+    }
+
+    // ======= AudioContext + Nodes =======
+    let audioContext;
+    let filter, convolver, dryGain, wetGain, delayNode, feedbackGain, panNode, gainNode;
+    let track;
+
+    async function loadIR(url) {
+      const res = await fetch(url);
+      const arrayBuffer = await res.arrayBuffer();
+      return audioContext.decodeAudioData(arrayBuffer);
+    }
+
+    async function initAudio(player) {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+        // MediaElementSource
+        track = audioContext.createMediaElementSource(player);
+
+        // Low-pass filter for muffling
+        filter = audioContext.createBiquadFilter();
+        filter.type = "lowpass";
+
+        // Convolver IR
+        convolver = audioContext.createConvolver();
+        convolver.buffer = await loadIR("ir3.wav"); // Large Wide Echo Hall
+
+        // Dry/Wet gains
+        dryGain = audioContext.createGain();
+        wetGain = audioContext.createGain();
+
+        // Delay for gradual echo
+        delayNode = audioContext.createDelay();
+        delayNode.delayTime.value = 0.15;
+        feedbackGain = audioContext.createGain();
+        feedbackGain.gain.value = 0;
+
+        // Stereo pan for space
+        panNode = audioContext.createStereoPanner();
+
+        // Overall volume
+        gainNode = audioContext.createGain();
+
+        // Connections
+        track.connect(filter);
+        filter.connect(dryGain);
+        filter.connect(convolver);
+        convolver.connect(wetGain);
+
+        // Echo loop
+        wetGain.connect(delayNode);
+        delayNode.connect(feedbackGain);
+        feedbackGain.connect(delayNode);
+
+        // Merge and pan
+        dryGain.connect(gainNode);
+        wetGain.connect(panNode);
+        delayNode.connect(panNode);
+        panNode.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        // Initial values (clean start)
+        filter.frequency.value = 18000;
+        dryGain.gain.value = 1;
+        wetGain.gain.value = 0;
+        feedbackGain.gain.value = 0;
+        panNode.pan.value = 0;
+        gainNode.gain.value = 1;
+
+        // Resume on user gesture
+        player.addEventListener("play", async () => {
+          if (audioContext.state === "suspended") {
+            await audioContext.resume();
+          }
+        });
+      }
+    }
+
+    // ======= Scroll Effects =======
+    window.addEventListener("scroll", () => {
+      if (!audioContext) return;
+
+      const maxScroll = document.body.scrollHeight - window.innerHeight;
+      const t = window.scrollY / maxScroll;
+
+      // Muffling
+      const minFreq = 800;
+      const maxFreq = 18000;
+      filter.frequency.value = maxFreq - t * (maxFreq - minFreq);
+
+      // Gradual wet gain
+      wetGain.gain.value = t * 0.5;
+
+      // Gradual echo
+      feedbackGain.gain.value = t * 0.35;
+
+      // Dry fade
+      dryGain.gain.value = 1 - t * 0.45;
+
+      // Stereo pan
+      panNode.pan.value = Math.sin(t * Math.PI * 2) * 0.15;
+
+      // Overall volume drop
+      gainNode.gain.value = 1 - t * 0.20;
+    });
+  </script>
 </body>
 </html>
